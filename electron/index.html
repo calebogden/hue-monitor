@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Hue Monitor</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      color: #fff;
+      min-height: 100vh;
+      padding: 40px 20px 20px;
+      -webkit-app-region: drag;
+    }
+    
+    button, input, select {
+      -webkit-app-region: no-drag;
+    }
+    
+    .container {
+      max-width: 440px;
+      margin: 0 auto;
+    }
+    
+    h1 {
+      font-size: 24px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    
+    h1 span {
+      font-size: 28px;
+    }
+    
+    .subtitle {
+      color: #888;
+      font-size: 14px;
+      margin-bottom: 30px;
+    }
+    
+    .card {
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    .card-title {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #888;
+      margin-bottom: 12px;
+    }
+    
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #666;
+    }
+    
+    .status-dot.connected {
+      background: #4ade80;
+      box-shadow: 0 0 10px #4ade8066;
+    }
+    
+    .status-dot.disconnected {
+      background: #f87171;
+    }
+    
+    .sensor-list {
+      list-style: none;
+    }
+    
+    .sensor-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    .sensor-item:last-child {
+      border-bottom: none;
+    }
+    
+    .sensor-name {
+      font-weight: 500;
+    }
+    
+    .sensor-state {
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.1);
+    }
+    
+    .sensor-state.open {
+      background: rgba(248, 113, 113, 0.2);
+      color: #f87171;
+    }
+    
+    .sensor-state.closed {
+      background: rgba(74, 222, 128, 0.2);
+      color: #4ade80;
+    }
+    
+    .event-log {
+      max-height: 200px;
+      overflow-y: auto;
+      font-family: monospace;
+      font-size: 12px;
+      color: #888;
+    }
+    
+    .event-log-item {
+      padding: 6px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    
+    .event-log-item .time {
+      color: #666;
+    }
+    
+    .event-log-item .sensor {
+      color: #fff;
+    }
+    
+    .btn {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #fff;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+      margin-top: 8px;
+      transition: transform 0.1s, opacity 0.1s;
+    }
+    
+    .btn:hover {
+      opacity: 0.9;
+    }
+    
+    .btn:active {
+      transform: scale(0.98);
+    }
+    
+    .btn.secondary {
+      background: rgba(255, 255, 255, 0.1);
+    }
+    
+    .setup-step {
+      display: none;
+    }
+    
+    .setup-step.active {
+      display: block;
+    }
+    
+    .input {
+      width: 100%;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: rgba(255, 255, 255, 0.05);
+      color: #fff;
+      font-size: 14px;
+      margin-bottom: 12px;
+    }
+    
+    .input:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+    
+    .hidden {
+      display: none !important;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1><span>💡</span> Hue Monitor</h1>
+    <p class="subtitle">Door sensor notifications</p>
+    
+    <!-- Setup View -->
+    <div id="setup-view">
+      <div class="card setup-step active" id="step-bridge">
+        <div class="card-title">Step 1: Connect Bridge</div>
+        <p style="margin-bottom: 16px; color: #aaa; font-size: 14px;">
+          Press the button on your Hue bridge, then click Connect.
+        </p>
+        <button class="btn" id="btn-connect">Connect to Bridge</button>
+        <p id="bridge-status" style="margin-top: 12px; font-size: 13px; color: #888;"></p>
+      </div>
+      
+      <div class="card setup-step" id="step-sensors">
+        <div class="card-title">Step 2: Select Sensors</div>
+        <ul class="sensor-list" id="sensor-select-list"></ul>
+        <button class="btn" id="btn-save-sensors">Save & Start Monitoring</button>
+      </div>
+    </div>
+    
+    <!-- Monitor View -->
+    <div id="monitor-view" class="hidden">
+      <div class="card">
+        <div class="card-title">Status</div>
+        <div class="status">
+          <div class="status-dot" id="status-dot"></div>
+          <span id="status-text">Disconnected</span>
+        </div>
+      </div>
+      
+      <div class="card">
+        <div class="card-title">Sensors</div>
+        <ul class="sensor-list" id="sensor-list"></ul>
+      </div>
+      
+      <div class="card">
+        <div class="card-title">Recent Events</div>
+        <div class="event-log" id="event-log">
+          <p style="color: #666;">No events yet</p>
+        </div>
+      </div>
+      
+      <button class="btn secondary" id="btn-settings">Settings</button>
+    </div>
+  </div>
+  
+  <script>
+    const { ipcRenderer } = require('electron');
+    
+    let config = {};
+    let events = [];
+    
+    async function init() {
+      config = await ipcRenderer.invoke('get-config');
+      
+      if (config.bridge?.ip && config.bridge?.key && config.sensors?.length > 0) {
+        showMonitorView();
+        startMonitoring();
+      } else {
+        showSetupView();
+      }
+    }
+    
+    function showSetupView() {
+      document.getElementById('setup-view').classList.remove('hidden');
+      document.getElementById('monitor-view').classList.add('hidden');
+    }
+    
+    function showMonitorView() {
+      document.getElementById('setup-view').classList.add('hidden');
+      document.getElementById('monitor-view').classList.remove('hidden');
+      renderSensors();
+    }
+    
+    function renderSensors() {
+      const list = document.getElementById('sensor-list');
+      list.innerHTML = config.sensors.map(s => `
+        <li class="sensor-item">
+          <span class="sensor-name">🚪 ${s.name}</span>
+          <span class="sensor-state closed">Closed</span>
+        </li>
+      `).join('');
+    }
+    
+    function addEvent(sensor, state) {
+      const time = new Date().toLocaleTimeString();
+      events.unshift({ time, sensor, state });
+      events = events.slice(0, 50);
+      
+      const log = document.getElementById('event-log');
+      log.innerHTML = events.map(e => `
+        <div class="event-log-item">
+          <span class="time">${e.time}</span> — 
+          <span class="sensor">${e.sensor}</span> ${e.state}
+        </div>
+      `).join('');
+    }
+    
+    async function startMonitoring() {
+      await ipcRenderer.invoke('start-monitoring');
+      document.getElementById('status-dot').classList.add('connected');
+      document.getElementById('status-text').textContent = 'Monitoring';
+    }
+    
+    // Connect button
+    document.getElementById('btn-connect').addEventListener('click', async () => {
+      const status = document.getElementById('bridge-status');
+      status.textContent = 'Discovering bridges...';
+      
+      const bridges = await ipcRenderer.invoke('discover-bridges');
+      
+      if (bridges.length === 0) {
+        status.textContent = '❌ No bridges found';
+        return;
+      }
+      
+      const ip = bridges[0].internalipaddress;
+      status.textContent = `Found bridge at ${ip}. Pairing...`;
+      
+      const result = await ipcRenderer.invoke('pair-bridge', ip);
+      
+      if (result.success) {
+        await ipcRenderer.invoke('set-config', 'bridge', { ip, key: result.key });
+        config.bridge = { ip, key: result.key };
+        status.textContent = '✅ Connected!';
+        
+        // Move to sensor selection
+        document.getElementById('step-bridge').classList.remove('active');
+        document.getElementById('step-sensors').classList.add('active');
+        
+        // Load sensors
+        const sensors = await ipcRenderer.invoke('get-sensors', ip, result.key);
+        const list = document.getElementById('sensor-select-list');
+        list.innerHTML = sensors.map((s, i) => `
+          <li class="sensor-item">
+            <label style="display: flex; align-items: center; gap: 8px;">
+              <input type="checkbox" value="${s.id}" data-name="Sensor ${i + 1}" checked>
+              <span>Sensor ${i + 1}</span>
+            </label>
+          </li>
+        `).join('');
+      } else {
+        status.textContent = `❌ ${result.error || 'Failed to pair'}`;
+      }
+    });
+    
+    // Save sensors
+    document.getElementById('btn-save-sensors').addEventListener('click', async () => {
+      const checkboxes = document.querySelectorAll('#sensor-select-list input:checked');
+      const sensors = Array.from(checkboxes).map(cb => ({
+        id: cb.value,
+        name: cb.dataset.name
+      }));
+      
+      await ipcRenderer.invoke('set-config', 'sensors', sensors);
+      config.sensors = sensors;
+      
+      showMonitorView();
+      startMonitoring();
+    });
+    
+    // Settings button
+    document.getElementById('btn-settings').addEventListener('click', () => {
+      showSetupView();
+      document.getElementById('step-bridge').classList.add('active');
+      document.getElementById('step-sensors').classList.remove('active');
+    });
+    
+    // Listen for door events
+    ipcRenderer.on('door-event', (_, data) => {
+      addEvent(data.sensor, data.state === 'open' ? '🔴 opened' : '🟢 closed');
+    });
+    
+    init();
+  </script>
+</body>
+</html>
