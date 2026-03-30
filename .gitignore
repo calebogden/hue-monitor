@@ -29,6 +29,9 @@ Thumbs.db
 
 # Config (contains secrets)
 .hue-monitor/
+.env
+.env.local
+.env.*.local
 
 # Electron builds
 release/

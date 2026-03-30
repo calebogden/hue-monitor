@@ -16,6 +16,9 @@ Monitor Philips Hue door/window sensors and get instant notifications when they 
 # Install dependencies
 pip3 install -r requirements.txt
 
+# Optional: configure local environment variables
+cp .env.example .env.local
+
 # Run setup to pair with your Hue Bridge
 python3 src/setup.py
 
