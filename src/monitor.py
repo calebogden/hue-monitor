@@ -8,12 +8,12 @@ import json
 import socket
 import requests
 from requests.adapters import HTTPAdapter
-from urllib3.util.connection import create_connection as urllib3_create_connection
 import urllib3
 from datetime import datetime
 import sys
 import time
 import os
+import threading
 from pathlib import Path
 
 from config import load_config, get_bridge_ip, get_bridge_key, get_telegram_config, CONFIG_DIR
@@ -25,7 +25,10 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 LOG_DIR = CONFIG_DIR / "logs"
 
-# Custom adapter that binds to specific interface
+# Watchdog: if no SSE data received in this many seconds, reconnect
+SSE_TIMEOUT_SECONDS = 120  # Bridge sends heartbeat ": hi" roughly every 10s
+
+
 class SourceAddressAdapter(HTTPAdapter):
     def __init__(self, source_address, **kwargs):
         self.source_address = source_address
@@ -96,6 +99,9 @@ def connect_and_monitor():
     local_ip = get_local_ip()
     print(f"[{datetime.now().isoformat()}] Local IP: {local_ip}", flush=True)
     
+    # Start heartbeat for dead man's switch monitoring
+    start_heartbeat_thread(interval_seconds=300)  # Every 5 minutes
+    
     # Create session with source address binding
     session = requests.Session()
     if local_ip:
@@ -109,17 +115,17 @@ def connect_and_monitor():
         "Accept": "text/event-stream"
     }
     
-    # Start heartbeat for dead man's switch monitoring
-    start_heartbeat_thread(interval_seconds=300)  # Every 5 minutes
-    
     print(f"[{datetime.now().isoformat()}] Connecting to Hue Bridge SSE stream...", flush=True)
     print(f"[{datetime.now().isoformat()}] Monitoring {len(monitored_sensors)} sensor(s):", flush=True)
     for sensor_id, name in monitored_sensors.items():
         print(f"  - {name}", flush=True)
     
     while True:
+        last_data_time = time.time()
+        
         try:
-            with session.get(url, headers=headers, stream=True, verify=False, timeout=(10, None)) as response:
+            # Use a read timeout to detect stale connections
+            with session.get(url, headers=headers, stream=True, verify=False, timeout=(10, SSE_TIMEOUT_SECONDS)) as response:
                 if response.status_code != 200:
                     print(f"[ERROR] Failed to connect: {response.status_code}", flush=True)
                     time.sleep(5)
@@ -128,10 +134,16 @@ def connect_and_monitor():
                 print(f"[{datetime.now().isoformat()}] Connected!", flush=True)
                 
                 for line in response.iter_lines():
+                    last_data_time = time.time()
+                    
                     if not line:
                         continue
                     
                     line_str = line.decode("utf-8")
+                    
+                    # SSE heartbeat from Hue bridge
+                    if line_str.startswith(": "):
+                        continue  # Ignore SSE comments/heartbeats
                     
                     # SSE format: "data: <json>"
                     if not line_str.startswith("data: "):
@@ -178,13 +190,15 @@ def connect_and_monitor():
                             if state == "open":
                                 send_notifications(sensor_name, state)
         
+        except requests.exceptions.ReadTimeout:
+            print(f"[{datetime.now().isoformat()}] SSE read timeout (no data for {SSE_TIMEOUT_SECONDS}s), reconnecting...", flush=True)
         except requests.exceptions.RequestException as e:
             print(f"[{datetime.now().isoformat()}] Connection error: {e}", flush=True)
-            print("Reconnecting in 5 seconds...", flush=True)
-            time.sleep(5)
-        except KeyboardInterrupt:
-            print("\nShutting down...", flush=True)
-            sys.exit(0)
+        except Exception as e:
+            print(f"[{datetime.now().isoformat()}] Unexpected error: {e}", flush=True)
+        
+        print("Reconnecting in 5 seconds...", flush=True)
+        time.sleep(5)
 
 
 if __name__ == "__main__":
