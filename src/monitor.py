@@ -5,7 +5,10 @@ Connects to Hue Bridge SSE stream and sends notifications when doors open/close.
 """
 
 import json
+import socket
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.connection import create_connection as urllib3_create_connection
 import urllib3
 from datetime import datetime
 import sys
@@ -15,11 +18,34 @@ from pathlib import Path
 
 from config import load_config, get_bridge_ip, get_bridge_key, get_telegram_config, CONFIG_DIR
 from notifications import send_telegram, send_native_notification, format_door_message, format_door_message_html
+from heartbeat import start_heartbeat_thread
 
 # Suppress SSL warnings (Hue bridge uses self-signed cert)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 LOG_DIR = CONFIG_DIR / "logs"
+
+# Custom adapter that binds to specific interface
+class SourceAddressAdapter(HTTPAdapter):
+    def __init__(self, source_address, **kwargs):
+        self.source_address = source_address
+        super().__init__(**kwargs)
+
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs["source_address"] = (self.source_address, 0)
+        super().init_poolmanager(*args, **kwargs)
+
+
+def get_local_ip():
+    """Get the local IP on the same network as the bridge."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("192.168.100.122", 443))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except:
+        return None
 
 
 def log_event(sensor_name: str, state: str, timestamp: str):
@@ -42,13 +68,6 @@ def send_notifications(sensor_name: str, state: str):
         message = format_door_message_html(sensor_name, state, timestamp)
         send_telegram(tg_config.get("bot_token"), tg_config.get("chat_id"), message)
     
-    # Slack
-    slack_config = config.get("notifications", {}).get("slack", {})
-    if slack_config.get("enabled"):
-        from notifications import send_slack
-        message = format_door_message(sensor_name, state, timestamp)
-        send_slack(slack_config.get("webhook_url"), message)
-    
     # Native macOS
     native_config = config.get("notifications", {}).get("native", {})
     if native_config.get("enabled"):
@@ -57,36 +76,41 @@ def send_notifications(sensor_name: str, state: str):
         send_native_notification(title, message)
 
 
-def get_sensor_name_by_id(sensor_id: str) -> str:
-    """Get sensor name from config by ID."""
-    config = load_config()
-    for sensor in config.get("sensors", []):
-        if sensor.get("id") == sensor_id:
-            return sensor.get("name", "Unknown Sensor")
-    return "Unknown Sensor"
-
-
 def connect_and_monitor():
     """Connect to SSE stream and monitor for door events."""
     bridge_ip = get_bridge_ip()
     bridge_key = get_bridge_key()
     
     if not bridge_ip or not bridge_key:
-        print("Error: Bridge not configured. Run setup.py first.")
+        print("Error: Bridge not configured. Run setup.py first.", flush=True)
         sys.exit(1)
     
     config = load_config()
     monitored_sensors = {s["id"]: s["name"] for s in config.get("sensors", [])}
     
     if not monitored_sensors:
-        print("Error: No sensors configured. Run setup.py to add sensors.")
+        print("Error: No sensors configured. Run setup.py to add sensors.", flush=True)
         sys.exit(1)
+    
+    # Get local IP for source binding
+    local_ip = get_local_ip()
+    print(f"[{datetime.now().isoformat()}] Local IP: {local_ip}", flush=True)
+    
+    # Create session with source address binding
+    session = requests.Session()
+    if local_ip:
+        adapter = SourceAddressAdapter(local_ip)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
     
     url = f"https://{bridge_ip}/eventstream/clip/v2"
     headers = {
         "hue-application-key": bridge_key,
         "Accept": "text/event-stream"
     }
+    
+    # Start heartbeat for dead man's switch monitoring
+    start_heartbeat_thread(interval_seconds=300)  # Every 5 minutes
     
     print(f"[{datetime.now().isoformat()}] Connecting to Hue Bridge SSE stream...", flush=True)
     print(f"[{datetime.now().isoformat()}] Monitoring {len(monitored_sensors)} sensor(s):", flush=True)
@@ -95,7 +119,7 @@ def connect_and_monitor():
     
     while True:
         try:
-            with requests.get(url, headers=headers, stream=True, verify=False, timeout=None) as response:
+            with session.get(url, headers=headers, stream=True, verify=False, timeout=(10, None)) as response:
                 if response.status_code != 200:
                     print(f"[ERROR] Failed to connect: {response.status_code}", flush=True)
                     time.sleep(5)
@@ -107,7 +131,7 @@ def connect_and_monitor():
                     if not line:
                         continue
                     
-                    line_str = line.decode('utf-8')
+                    line_str = line.decode("utf-8")
                     
                     # SSE format: "data: <json>"
                     if not line_str.startswith("data: "):
@@ -126,7 +150,6 @@ def connect_and_monitor():
                             continue
                         
                         for item in event.get("data", []):
-                            # Check if this is a contact sensor we're monitoring
                             if item.get("type") != "contact":
                                 continue
                             
@@ -149,11 +172,9 @@ def connect_and_monitor():
                             
                             print(f"[{timestamp}] {sensor_name}: {state.upper()}", flush=True)
                             
-                            # Log event
                             if config.get("log_events", True):
                                 log_event(sensor_name, state.upper(), timestamp)
                             
-                            # Send notifications (only on open by default, configurable)
                             if state == "open":
                                 send_notifications(sensor_name, state)
         
