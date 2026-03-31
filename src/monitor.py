@@ -102,13 +102,6 @@ def connect_and_monitor():
     # Start heartbeat for dead man's switch monitoring
     start_heartbeat_thread(interval_seconds=300)  # Every 5 minutes
     
-    # Create session with source address binding
-    session = requests.Session()
-    if local_ip:
-        adapter = SourceAddressAdapter(local_ip)
-        session.mount("https://", adapter)
-        session.mount("http://", adapter)
-    
     url = f"https://{bridge_ip}/eventstream/clip/v2"
     headers = {
         "hue-application-key": bridge_key,
@@ -120,7 +113,22 @@ def connect_and_monitor():
     for sensor_id, name in monitored_sensors.items():
         print(f"  - {name}", flush=True)
     
+    # Track consecutive failures to recreate session
+    consecutive_failures = 0
+    session = None
+    
     while True:
+        # Create fresh session after 3 consecutive failures to recover from corrupted connection pool
+        if consecutive_failures >= 3 or session is None:
+            if consecutive_failures >= 3:
+                print(f"[{datetime.now().isoformat()}] Creating fresh session after {consecutive_failures} failures", flush=True)
+            session = requests.Session()
+            if local_ip:
+                adapter = SourceAddressAdapter(local_ip)
+                session.mount("https://", adapter)
+                session.mount("http://", adapter)
+            consecutive_failures = 0
+        
         last_data_time = time.time()
         
         try:
@@ -132,6 +140,7 @@ def connect_and_monitor():
                     continue
                 
                 print(f"[{datetime.now().isoformat()}] Connected!", flush=True)
+                consecutive_failures = 0  # Reset on successful connection
                 
                 for line in response.iter_lines():
                     last_data_time = time.time()
@@ -192,10 +201,13 @@ def connect_and_monitor():
         
         except requests.exceptions.ReadTimeout:
             print(f"[{datetime.now().isoformat()}] SSE read timeout (no data for {SSE_TIMEOUT_SECONDS}s), reconnecting...", flush=True)
+            consecutive_failures += 1
         except requests.exceptions.RequestException as e:
             print(f"[{datetime.now().isoformat()}] Connection error: {e}", flush=True)
+            consecutive_failures += 1
         except Exception as e:
             print(f"[{datetime.now().isoformat()}] Unexpected error: {e}", flush=True)
+            consecutive_failures += 1
         
         print("Reconnecting in 5 seconds...", flush=True)
         time.sleep(5)
